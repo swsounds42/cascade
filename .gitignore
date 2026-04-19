@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.venv/
+env/
+.env
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# MCP runtime state
+.cascade/
+*.db
+*.sqlite
+*.sqlite-journal
+observations.db
+intelligence-index.json
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
+.obsidian/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Node (just in case any hook ever gets a package.json)
+node_modules/
+package-lock.json
+
+# Ephemeral
+*.pid
+*.lock
+*.bak
+*.bak.*
