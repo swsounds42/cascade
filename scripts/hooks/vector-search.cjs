@@ -35,6 +35,17 @@ const STOP_WORDS = new Set([
   'here', 'there', 'when', 'where', 'why', 'how', 'what', 'which', 'who',
   'whom', 'you', 'your', 'we', 'our', 'they', 'their', 'he', 'she', 'him',
   'her', 'me', 'my', 'i', 'am',
+  // Conversational fillers — never domain content. Adding these prevents
+  // false positives like "let's keep going" → gws-keep (where "lets" + "going"
+  // are filler, leaving only "keep" which collides with the Google product name).
+  // NOTE: "work" deliberately NOT included — it IS a domain term ("resume work",
+  // "verify work" are real intent triggers for gsd-resume-work / gsd-verify-work).
+  'lets', 'let', 'going', 'doing', 'getting', 'making', 'taking', 'using',
+  'thing', 'things', 'stuff', 'way', 'ways', 'actually', 'really', 'pretty',
+  'right', 'okay', 'yeah', 'yes', 'sure', 'gonna', 'wanna', 'kinda', 'sorta',
+  'now', 'still', 'maybe', 'probably', 'definitely', 'something', 'anything',
+  'everything', 'nothing', 'someone', 'anyone', 'everyone', 'nobody',
+  'good', 'great', 'nice', 'bad', 'big', 'small', 'one', 'two', 'three',
 ]);
 
 function tokenize(text) {

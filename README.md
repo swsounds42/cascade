@@ -40,6 +40,7 @@ cascade/
 │       ├── hook-handler.cjs    main dispatcher
 │       ├── intelligence.cjs    knowledge indexing + TF-IDF search
 │       ├── router.cjs          domain-aware task routing with outcome history
+│       ├── model-router.cjs    per-prompt model-tier classifier (Haiku/Sonnet/Opus)
 │       ├── session.cjs         session state + metrics
 │       ├── observations.cjs    episodic memory, SQLite FTS5 backing store
 │       ├── vector-search.cjs   TF-IDF vectorizer + cosine similarity
@@ -105,7 +106,7 @@ loops Cascade is optimized for:
 The hooks in `scripts/hooks/` fire on three Claude Code events:
 
 - **`SessionStart`** — indexes any files in `Knowledge/` via TF-IDF. Loads episodic memory from SQLite. Prints a stat line so you know how much brain surface area just came online.
-- **`UserPromptSubmit`** — on every prompt, looks up relevant knowledge and past similar actions. Surfaces the top matches in the prompt as context. Recommends which specialist agent historically handles this kind of request best.
+- **`UserPromptSubmit`** — on every prompt, looks up relevant knowledge and past similar actions. Surfaces the top matches in the prompt as context. Recommends which specialist agent historically handles this kind of request best. Also classifies the prompt's complexity and recommends a Claude model tier (`model-router.cjs`) — Haiku for confirmations and mechanical work, Opus for hard reasoning, Sonnet for everything in between — so credits go where they buy real lift.
 - **`PostToolUse`** — records every tool call as an episodic observation. Checkpoints git state before parallel agent dispatches. Flags files touched by multiple agents in the same wave (drift detection).
 
 Everything is local — SQLite for episodic memory, JSON for TF-IDF vectors.

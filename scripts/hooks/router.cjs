@@ -12,51 +12,62 @@ const path = require('path');
 const PROJECT_ROOT = process.env.CASCADE_ROOT || process.cwd();
 const OUTCOMES_FILE = path.join(PROJECT_ROOT, '.cascade', 'sessions', 'outcomes.jsonl');
 
-// Domain patterns mapped to specialist agents
-// Ordered by specificity — first match wins
+// Domain patterns mapped to specialist agents.
+// Ordered by specificity — first match wins. Specific tech BEFORE broad CRM.
+//
+// Every alternation is wrapped in \b(...)\b. Without word boundaries, short tokens
+// match inside unrelated words: `ui` → "build/built/guide/quick/acquired",
+// `api` → "rapid/therapist", `add` → "address/padding", etc.
+//
+// Patterns dropped vs prior version:
+//   - vue|nuxt|composition.api      (no Vue in stack)
+//   - terraform|infrastructure|iac  (no IaC in stack)
+//   - graphql|openapi               (not used; kept api|endpoint|rest)
+//   - implement|create|build|add... (catch-all that routed everything to general-purpose)
+//   - pipeline|contact|deal         (overloaded tokens that shadowed specific rows)
 const TASK_PATTERNS = {
-  // RevOps domain
-  'hubspot|crm|contact|deal|pipeline|revops|revenue': 'general-purpose',
-  'gong|forecasting|forecast|call recording': 'general-purpose',
-  'salesforce|outreach|sales.engagement': 'general-purpose',
-
-  // Integration / workflow
-  'n8n|workflow|automation|webhook|zapier|make\\.com': 'general-purpose',
+  // Specific tech — checked FIRST so they win over the broader CRM/RevOps row
   'mcp|model.context.protocol|mcp.server': 'mcp-developer',
-  'api|endpoint|rest|graphql|openapi': 'api-designer',
+  'n8n|workflow|automation|webhook|zapier|make\\.com': 'general-purpose',
 
-  // Frontend
-  'react|next\\.?js|component|jsx|tsx|frontend|ui': 'nextjs-developer',
-  'vue|nuxt|composition.api': 'vue-expert',
-  'css|tailwind|styling|responsive|layout': 'frontend-developer',
-  'html|presentation|slide|deck': 'frontend-developer',
+  // Frontend — \b boundary on every token to kill the `ui` substring bug
+  '\\b(react|next\\.?js|nextjs|jsx|tsx|frontend|tailwind)\\b': 'nextjs-developer',
+  '\\b(css|styling|responsive.design|page.layout|css.layout)\\b': 'frontend-developer',
+  '\\b(html.slides|slide.deck|pitch.deck|presentation.html)\\b': 'frontend-developer',
 
   // Backend
-  'python|django|flask|fastapi|pip': 'python-pro',
-  'typescript|node|express|npm|bun|deno': 'typescript-pro',
-  'database|sql|postgres|query|migration|schema': 'sql-pro',
+  '\\b(python|django|flask|fastapi|pip)\\b': 'python-pro',
+  '\\b(typescript|node|express|npm|bun|deno)\\b': 'typescript-pro',
+  '\\b(database|sql|postgres|migration|schema)\\b|\\bsoql\\b': 'sql-pro',
+
+  // API design — `rest` requires context (rest API / RESTful) because bare `rest`
+  // false-positives on "the rest of X" / "take a rest". Same for `api` as standalone
+  // word — kept since "api" rarely appears in conversational English.
+  '\\b(api|endpoint|openapi|swagger|restful|rest.?api)\\b': 'api-designer',
 
   // Infrastructure
-  'docker|container|compose|kubernetes|k8s': 'docker-expert',
-  'deploy|ci.?cd|pipeline|github.action': 'devops-engineer',
-  'terraform|infrastructure|iac': 'terraform-engineer',
+  '\\b(docker|container|compose|kubernetes|k8s)\\b': 'docker-expert',
+  '\\b(deploy|ci.?cd|github.action|cloud.run|gcp.deploy)\\b': 'devops-engineer',
 
-  // Quality
-  'test|spec|coverage|jest|pytest|vitest': 'test-automator',
-  'review|audit|code.quality|lint': 'code-reviewer',
-  'security|vulnerability|cve|auth|permission': 'security-engineer',
-  'performance|optimize|slow|latency|profile': 'performance-engineer',
-
-  // Content / writing
-  'blog|article|newsletter|writing|content': 'general-purpose',
-  'documentation|docs|readme|guide': 'technical-writer',
+  // Quality — anchored 'fix' to bug-related nouns to prevent 'fix the typo' false matches
+  '\\b(test|spec|coverage|jest|pytest|vitest)\\b': 'test-automator',
+  '\\b(code.review|pr.review|review.this.code|code.quality|lint)\\b': 'code-reviewer',
+  '\\b(security.review|security.audit|vulnerability|cve|threat.model)\\b': 'security-engineer',
+  '\\b(performance|optimize|slow|latency|profile)\\b': 'performance-engineer',
 
   // Research / analysis
-  'research|analyze|investigate|compare|evaluate': 'research-analyst',
-  'debug|bug|error|fix|broken|failing': 'debugger',
+  '\\b(research|investigate|deep.dive|deeply.analyze)\\b': 'research-analyst',
+  '\\bdebug\\b|\\b(bug|error|broken|failing|crash)\\b|\\bfix.{0,15}(bug|crash|issue|error|test|build)\\b': 'debugger',
 
-  // Code tasks (broad — low priority)
-  'implement|create|build|add|write.code|refactor': 'general-purpose',
+  // Content / writing
+  '\\b(blog|article|newsletter|content.strategy)\\b': 'general-purpose',
+  '\\b(documentation|docs|readme|api.guide)\\b': 'technical-writer',
+
+  // Broad business-ops domain — kept at BOTTOM so the specific tech rows above
+  // win first. Removed overloaded tokens (pipeline|contact|deal) that shadowed
+  // specific rows. Domain-skill overrides in intelligence.cjs handle the
+  // high-precision routing to your own domain skills.
+  '\\b(crm|revops|sales.ops|marketing.ops|go.to.market)\\b': 'general-purpose',
 };
 
 // Load historical outcomes to bias routing

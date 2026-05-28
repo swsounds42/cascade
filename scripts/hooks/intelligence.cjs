@@ -20,6 +20,7 @@ const STORE_PATH = path.join(DATA_DIR, 'knowledge-index.json');
 const RANKED_PATH = path.join(DATA_DIR, 'ranked-context.json');
 const PENDING_PATH = path.join(DATA_DIR, 'pending-insights.jsonl');
 const PATTERNS_PATH = path.join(DATA_DIR, 'learned-patterns.json');
+const RECS_LOG = path.join(DATA_DIR, 'skill-recommendations.jsonl');
 
 // Vector search upgrade — TF-IDF + cosine similarity
 let vectorSearch = null;
@@ -35,6 +36,74 @@ const KNOWLEDGE_DIRS = [
   path.join(PROJECT_ROOT, 'Knowledge'),
   path.join(os.homedir(), '.claude', 'projects'),
 ];
+
+// Skill index sources — local skills (filesystem-discoverable, NOT remote plugins).
+// Two roots:
+//   ~/.claude/skills/<name>/SKILL.md            — standard skills (also handles symlinks to remote skills)
+//   ~/.claude/commands/<name>/SKILL.md          — flagship/custom skills (your own
+//                                                 domain skills with a SKILL.md live here)
+// Bare *.md files in commands/ are slash-command prompt templates — NOT skills, skipped.
+const SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
+const COMMANDS_DIR = path.join(os.homedir(), '.claude', 'commands');
+
+// Domain-skill keyword overrides — explicit phrases that bypass TF-IDF and emit
+// a MUST INVOKE directive directly. Bias-corrects for skills with terse descriptions
+// or domain vocabulary that doesn't match the wider corpus.
+//
+// Each entry: { pattern: RegExp, skill: string, reason: string }.
+// First-match-wins. Patterns require word boundaries (no substring traps).
+//
+// The entries below are ILLUSTRATIVE. Replace them with your own domain → skill
+// mappings: the phrases that should hard-route to a specific skill regardless of
+// what the index thinks. This is where you encode the routing your corpus can't
+// learn on its own.
+const DOMAIN_OVERRIDES = [
+  // Example — payments domain routes to a payments-ops skill
+  { pattern: /\b(stripe|payment|invoice|billing|charge).{0,15}(integration|webhook|reconcile|dispute)/i,
+    skill: 'payments-ops', reason: 'Payments domain phrase' },
+
+  // Example — SQL / database work routes to a SQL specialist
+  { pattern: /\bsoql\b|\bsql\b|\bwrite.{0,10}(a )?query|\b(database|schema).{0,12}migration/i,
+    skill: 'sql-pro', reason: 'SQL / database phrase' },
+
+  // Example — multi-step feature planning routes to a planning skill
+  { pattern: /\bplan.{0,10}(this )?phase\b|\bmulti.step.{0,10}feature\b|\bbreak.{0,10}down.{0,10}(this )?work/i,
+    skill: 'plan-phase', reason: 'Multi-step feature / planning phase' },
+
+  // Example — strategic / executive memo routes to a framing skill
+  { pattern: /\b(board|investor|exec).{0,10}update\b|\b(strategic|executive).{0,10}memo\b/i,
+    skill: 'mbb-frame', reason: 'Strategic / executive memo phrase' },
+];
+
+function findDomainOverrides(prompt) {
+  if (!prompt) return [];
+  const matches = [];
+  const seen = new Set();
+  for (const rule of DOMAIN_OVERRIDES) {
+    if (seen.has(rule.skill)) continue;
+    if (rule.pattern.test(prompt)) {
+      matches.push({ skill: rule.skill, reason: rule.reason });
+      seen.add(rule.skill);
+    }
+  }
+  return matches;
+}
+
+// Stop-words for the name-boost amplifier.
+// These tokens appear in many skill names AND in conversational English prompts.
+// 3x-boosting them creates false positives (e.g., "let's keep going" → gws-keep at 0.42).
+// They still appear at 1x in nameTokens for general matching — we just don't amplify.
+const NAME_BOOST_STOPWORDS = new Set([
+  // Common verbs in conversational prompts
+  'keep', 'send', 'make', 'find', 'get', 'add', 'save', 'do', 'go',
+  'help', 'check', 'review', 'next', 'fast', 'quick', 'set', 'show',
+  'see', 'edit', 'view', 'list', 'read', 'post', 'share', 'note',
+  'update', 'create', 'manage', 'work', 'use', 'run',
+  // Common nouns
+  'data', 'task', 'item', 'page', 'time', 'name', 'all', 'new',
+  // Cluster prefixes — these appear in 20+ skills each, no signal
+  'gws', 'gsd', 'cog', 'tob', 'sf', 'recipe', 'persona', 'workflow',
+]);
 
 // File extensions to index
 const INDEXABLE_EXTENSIONS = new Set(['.md', '.txt', '.yaml', '.yml', '.json']);
@@ -152,6 +221,125 @@ function makeEntry(index, content, summary, sourcePath) {
   };
 }
 
+// Index local Claude Code skills — walks each ~/.claude/skills/<name>/SKILL.md.
+// Each skill becomes a high-confidence entry with category='skill' so
+// getContext() can surface it as a routing recommendation. Reads YAML
+// frontmatter (name, description) and uses description as the primary
+// indexable text. Falls back to first 500 chars of body.
+function indexSkills() {
+  // Walk both standard skill roots. Each root contains <name>/SKILL.md per skill.
+  // Bare *.md files in commands/ are slash-command prompts (not skills) — skipped.
+  // Dedupe by resolved SKILL.md path so the same skill in both roots indexes once.
+  const entries = [];
+  const seenPaths = new Set();
+  for (const dir of [SKILLS_DIR, COMMANDS_DIR]) {
+    for (const entry of indexSkillsInDir(dir)) {
+      if (seenPaths.has(entry.source)) continue;
+      seenPaths.add(entry.source);
+      entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+function indexSkillsInDir(dir) {
+  const entries = [];
+  if (!fs.existsSync(dir)) return entries;
+
+  let items;
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); }
+  catch { return entries; }
+
+  for (const item of items) {
+    // Skip non-skill subdirs (template assets, catalogs)
+    if (item.name === 'skill-resources') continue;
+    if (item.name === 'subagent-catalog') continue;
+
+    let skillPath = path.join(dir, item.name);
+    let skillMdPath;
+
+    if (item.isSymbolicLink()) {
+      // Symlink — could point to a directory (skill root) or a bare SKILL.md file
+      let realPath;
+      try { realPath = fs.realpathSync(skillPath); }
+      catch { continue; }
+      let stat;
+      try { stat = fs.statSync(realPath); }
+      catch { continue; }
+      if (stat.isDirectory()) {
+        skillMdPath = path.join(realPath, 'SKILL.md');
+      } else if (stat.isFile() && realPath.endsWith('SKILL.md')) {
+        skillMdPath = realPath;
+      } else {
+        continue; // bare .md slash-command, not a skill
+      }
+    } else if (item.isDirectory()) {
+      skillMdPath = path.join(skillPath, 'SKILL.md');
+    } else {
+      continue; // bare files in skills/ or commands/ — slash commands, not skills
+    }
+
+    if (!skillMdPath || !fs.existsSync(skillMdPath)) continue;
+
+    let content;
+    try { content = fs.readFileSync(skillMdPath, 'utf-8'); }
+    catch { continue; }
+    if (!content) continue;
+
+    // Parse YAML frontmatter
+    let name = item.name;
+    let description = '';
+    const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/);
+    if (fmMatch) {
+      const fm = fmMatch[1];
+      // description can span multiple lines until the next key — match up to next ^\w+:
+      const descMatch = fm.match(/description:\s*([\s\S]+?)(?=\n[a-zA-Z_-]+:\s|$)/);
+      if (descMatch) description = descMatch[1].trim().replace(/\s+/g, ' ');
+      const nameMatch = fm.match(/name:\s*(.+)/);
+      if (nameMatch) name = nameMatch[1].trim();
+    }
+
+    // Indexable text: description + name (high signal). Fall back to body if no desc.
+    const body = content.replace(/^---[\s\S]*?---\n/, '').trim();
+    const indexable = description || body.substring(0, 500);
+    if (indexable.length < 10) continue;
+
+    // Summary surfaced to Claude — start with the skill name so it's invocable
+    const summary = `${name} — ${indexable.substring(0, 90)}${indexable.length > 90 ? '...' : ''}`;
+
+    // Boost skill name + trigger phrases for stronger TF-IDF matching.
+    // Long descriptions otherwise get penalized via document-length dilution;
+    // repeating the name + extracting quoted trigger phrases counteracts that.
+    //
+    // BUT: filter common English stop-words from the boost. Otherwise tokens
+    // like "keep" in gws-keep get 3x-amplified and false-positive on prompts
+    // like "let's keep going". Stop-words still appear in nameTokens at 1x.
+    const nameTokens = name + ' ' + name.replace(/-/g, ' ');
+    const distinctNameTokens = nameTokens
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(t => t && !NAME_BOOST_STOPWORDS.has(t))
+      .join(' ');
+    const nameBoost = distinctNameTokens ? (distinctNameTokens + ' ').repeat(3) : '';
+    const quotedTriggers = (indexable.match(/"([^"]{2,40})"/g) || []).join(' ');
+    const triggerBoost = quotedTriggers ? quotedTriggers.repeat(2) : '';
+    const indexableContent = nameBoost + indexable + ' ' + triggerBoost + ' ' + nameTokens;
+
+    entries.push({
+      id: `skill-${item.name}`,
+      content: indexableContent,
+      summary,
+      source: skillMdPath,
+      category: 'skill',
+      confidence: 0.85, // skills are intentional artifacts — higher base confidence
+      words: tokenize(indexableContent),
+      skillName: name,
+    });
+  }
+
+  return entries;
+}
+
 function categorizeByPath(filePath) {
   const lower = filePath.toLowerCase();
   if (lower.includes('career') || lower.includes('positioning')) return 'career';
@@ -182,6 +370,12 @@ module.exports = {
    */
   init: function() {
     cachedEntries = indexKnowledgeBase();
+
+    // Merge in local skills as searchable entries (so prompts route to skills via TF-IDF)
+    try {
+      const skills = indexSkills();
+      cachedEntries = cachedEntries.concat(skills);
+    } catch { /* skip if skills dir unreadable */ }
 
     // Merge in learned patterns as high-confidence entries
     const patterns = loadPatterns();
@@ -234,17 +428,80 @@ module.exports = {
 
     const blocks = [];
 
-    // Block 1: Semantic memory — curated Knowledge/
+    // Block 0: Domain-skill keyword overrides — explicit phrases that bypass TF-IDF.
+    // Emitted FIRST so they read as the strongest signal in the context window.
+    // Bias-corrects for skills with terse descriptions or domain vocab the corpus doesn't carry well.
+    const overrides = findDomainOverrides(prompt);
+    if (overrides.length > 0) {
+      const overrideLines = ['[CASCADE SKILLS] ⚡ MUST INVOKE — domain phrase matched:'];
+      for (const o of overrides) {
+        overrideLines.push(`  → ${o.skill} (override — ${o.reason})`);
+      }
+      blocks.push(overrideLines.join('\n'));
+    }
+
+    // Block 1: Skills + Knowledge from semantic vector search.
+    // Pull more results than we render so we can partition skills vs knowledge.
     if (vectorSearch && vectorIndex) {
       try {
-        const results = vectorSearch.search(prompt, vectorIndex, 5);
+        const results = vectorSearch.search(prompt, vectorIndex, 15);
         if (results && results.length > 0) {
-          const lines = ['[CASCADE INTELLIGENCE] Relevant knowledge (tfidf):'];
-          for (const r of results) {
-            const label = r.category ? `[${r.category}]` : '';
-            lines.push(`  * (${r.score.toFixed(2)}) ${label} ${r.summary}`);
+          const skillHits = results.filter(r => r.category === 'skill').slice(0, 5);
+          const knowledgeHits = results.filter(r => r.category !== 'skill').slice(0, 5);
+
+          // Skill block — aggressive language, score floor 0.10 (lower = noisier, higher = misses).
+          // Even when TF-IDF misses, the policy text in CLAUDE.md (Routing Imperative + Anti-patterns)
+          // backstops the cases. The Skill tool's own activation reads SKILL.md descriptions directly.
+          //
+          // Length-aware filtering:
+          // - 0 distinct content tokens: skip emission entirely (no signal)
+          // - 1 distinct content token: skip emission (degenerate TF-IDF —
+          //   any doc containing the token gets a near-100% score, e.g.
+          //   "let's keep going" tokenizes to ["keep"] and matches gws-keep at 0.83)
+          // - 2 distinct content tokens: floor 0.25 (still noisy)
+          // - 3+ distinct content tokens: floor 0.10 (real signal)
+          const promptTokens = vectorSearch.tokenize ? vectorSearch.tokenize(prompt) : [];
+          const distinctTokens = new Set(promptTokens).size;
+          let skillFloor;
+          if (distinctTokens < 2) skillFloor = Infinity; // suppress emission entirely
+          else if (distinctTokens === 2) skillFloor = 0.25;
+          else skillFloor = 0.10;
+
+          if (skillHits.length > 0 && skillFloor !== Infinity) {
+            const lines = ['[CASCADE SKILLS] ⚡ MATCH — invoke before doing inline work:'];
+            const logged = [];
+            for (const s of skillHits) {
+              if (s.score >= skillFloor) {
+                lines.push(`  → ${s.summary} (${s.score.toFixed(2)})`);
+                logged.push({ summary: s.summary, score: s.score, id: s.id });
+              }
+            }
+            if (lines.length > 1) blocks.push(lines.join('\n'));
+
+            // C1 telemetry — append recommendations to JSONL for later analysis.
+            // Best-effort; log failure must not break the hook.
+            if (logged.length > 0) {
+              try {
+                ensureDir(path.dirname(RECS_LOG));
+                const entry = {
+                  ts: Date.now(),
+                  prompt: prompt.substring(0, 200),
+                  recs: logged,
+                };
+                fs.appendFileSync(RECS_LOG, JSON.stringify(entry) + '\n');
+              } catch { /* best-effort */ }
+            }
           }
-          blocks.push(lines.join('\n'));
+
+          // Knowledge block — same as before
+          if (knowledgeHits.length > 0) {
+            const lines = ['[CASCADE INTELLIGENCE] Relevant knowledge (tfidf):'];
+            for (const r of knowledgeHits) {
+              const label = r.category ? `[${r.category}]` : '';
+              lines.push(`  * (${r.score.toFixed(2)}) ${label} ${r.summary}`);
+            }
+            blocks.push(lines.join('\n'));
+          }
         }
       } catch { /* fall through to Jaccard */ }
     }

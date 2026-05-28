@@ -28,6 +28,7 @@ function safeRequire(modulePath) {
 }
 
 const router = safeRequire(path.join(helpersDir, 'router.cjs'));
+const modelRouter = safeRequire(path.join(helpersDir, 'model-router.cjs'));
 const session = safeRequire(path.join(helpersDir, 'session.cjs'));
 const intelligence = safeRequire(path.join(helpersDir, 'intelligence.cjs'));
 const driftDetector = safeRequire(path.join(helpersDir, 'drift-detector.cjs'));
@@ -137,12 +138,28 @@ async function main() {
         } catch { /* non-fatal */ }
       }
 
-      // Show routing recommendation
+      // Show routing recommendation — fires at lower threshold (0.5) with stronger language
+      // at high confidence. The hook can't force invocation; it nudges the model.
       if (router && router.routeTask && prompt) {
         const result = router.routeTask(prompt);
         if (result.confidence >= 0.7) {
-          console.log(`[CASCADE] Recommended agent: ${result.agent} (${(result.confidence * 100).toFixed(0)}%) — ${result.reason}`);
+          console.log(`[CASCADE ROUTING] ⚡ MUST INVOKE: spawn '${result.agent}' agent (${(result.confidence * 100).toFixed(0)}% match — ${result.reason}). Do NOT do this inline.`);
+        } else if (result.confidence >= 0.5) {
+          console.log(`[CASCADE ROUTING] Consider: '${result.agent}' agent (${(result.confidence * 100).toFixed(0)}% match — ${result.reason})`);
         }
+      }
+
+      // Model routing — recommend Opus 4.7 / Sonnet 4.6 / Haiku 4.5 based on task complexity.
+      // Silent for Sonnet (the default); only emits when escalation/downgrade is warranted.
+      // Logs every decision to .cascade/sessions/model-decisions.jsonl for retrospective tuning.
+      if (modelRouter && modelRouter.routeModel && prompt && process.env.CASCADE_MODEL_ROUTER !== 'off') {
+        try {
+          const decision = modelRouter.routeModel(prompt);
+          if (modelRouter.shouldEmit(decision)) {
+            console.log(modelRouter.formatDirective(decision));
+          }
+          modelRouter.logDecision(prompt, decision);
+        } catch { /* non-fatal */ }
       }
     },
 
