@@ -20,7 +20,7 @@ const OUTCOMES_FILE = path.join(PROJECT_ROOT, '.cascade', 'sessions', 'outcomes.
 // `api` → "rapid/therapist", `add` → "address/padding", etc.
 //
 // Patterns dropped vs prior version:
-//   - vue|nuxt|composition.api      (no Vue in stack)
+//   - vue|nuxt|composition.api      (no Vue in stack — re-add if yours has it)
 //   - terraform|infrastructure|iac  (no IaC in stack)
 //   - graphql|openapi               (not used; kept api|endpoint|rest)
 //   - implement|create|build|add... (catch-all that routed everything to general-purpose)
@@ -63,11 +63,10 @@ const TASK_PATTERNS = {
   '\\b(blog|article|newsletter|content.strategy)\\b': 'general-purpose',
   '\\b(documentation|docs|readme|api.guide)\\b': 'technical-writer',
 
-  // Broad business-ops domain — kept at BOTTOM so the specific tech rows above
-  // win first. Removed overloaded tokens (pipeline|contact|deal) that shadowed
-  // specific rows. Domain-skill overrides in intelligence.cjs handle the
-  // high-precision routing to your own domain skills.
-  '\\b(crm|revops|sales.ops|marketing.ops|go.to.market)\\b': 'general-purpose',
+  // CRM / RevOps domain — kept at BOTTOM (was shadowing specific rows above).
+  // Removed overloaded tokens (pipeline|contact|deal). Domain-skill overrides in
+  // intelligence.cjs handle the high-precision CRM routing now.
+  '\\b(hubspot|salesforce|crm|revops|outreach|gong|forecast)\\b': 'general-purpose',
 };
 
 // Load historical outcomes to bias routing

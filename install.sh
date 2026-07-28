@@ -118,7 +118,7 @@ link_hook() {
   ok "Linked $name"
 }
 
-for hook in hook-handler.cjs intelligence.cjs router.cjs session.cjs observations.cjs vector-search.cjs drift-detector.cjs; do
+for hook in hook-handler.cjs intelligence.cjs router.cjs model-router.cjs instincts.cjs read-gate.cjs session.cjs observations.cjs vector-search.cjs drift-detector.cjs; do
   link_hook "$hook"
 done
 

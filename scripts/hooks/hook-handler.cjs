@@ -33,6 +33,7 @@ const session = safeRequire(path.join(helpersDir, 'session.cjs'));
 const intelligence = safeRequire(path.join(helpersDir, 'intelligence.cjs'));
 const driftDetector = safeRequire(path.join(helpersDir, 'drift-detector.cjs'));
 const observations = safeRequire(path.join(helpersDir, 'observations.cjs'));
+const instincts = safeRequire(path.join(helpersDir, 'instincts.cjs'));
 
 const [,, command, ...args] = process.argv;
 
@@ -149,7 +150,7 @@ async function main() {
         }
       }
 
-      // Model routing — recommend Opus 4.7 / Sonnet 4.6 / Haiku 4.5 based on task complexity.
+      // Model routing — recommend a Claude tier (Opus / Sonnet / Haiku) based on task complexity.
       // Silent for Sonnet (the default); only emits when escalation/downgrade is warranted.
       // Logs every decision to .cascade/sessions/model-decisions.jsonl for retrospective tuning.
       if (modelRouter && modelRouter.routeModel && prompt && process.env.CASCADE_MODEL_ROUTER !== 'off') {
@@ -159,6 +160,16 @@ async function main() {
             console.log(modelRouter.formatDirective(decision));
           }
           modelRouter.logDecision(prompt, decision);
+        } catch { /* non-fatal */ }
+      }
+
+      // Surface learned instincts — command habits mined from the observation
+      // DB (instincts.cjs). Silent unless a high-confidence habit matches the
+      // prompt's domain. Cheap: reads the small instincts.json, never the DB.
+      if (instincts && instincts.surface && prompt) {
+        try {
+          const block = instincts.surface(prompt);
+          if (block) console.log(block);
         } catch { /* non-fatal */ }
       }
     },

@@ -40,8 +40,7 @@ const KNOWLEDGE_DIRS = [
 // Skill index sources — local skills (filesystem-discoverable, NOT remote plugins).
 // Two roots:
 //   ~/.claude/skills/<name>/SKILL.md            — standard skills (also handles symlinks to remote skills)
-//   ~/.claude/commands/<name>/SKILL.md          — flagship/custom skills (your own
-//                                                 domain skills with a SKILL.md live here)
+//   ~/.claude/commands/<name>/SKILL.md          — flagship/custom skills, if you keep any there
 // Bare *.md files in commands/ are slash-command prompt templates — NOT skills, skipped.
 const SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 const COMMANDS_DIR = path.join(os.homedir(), '.claude', 'commands');
@@ -53,10 +52,10 @@ const COMMANDS_DIR = path.join(os.homedir(), '.claude', 'commands');
 // Each entry: { pattern: RegExp, skill: string, reason: string }.
 // First-match-wins. Patterns require word boundaries (no substring traps).
 //
-// The entries below are ILLUSTRATIVE. Replace them with your own domain → skill
-// mappings: the phrases that should hard-route to a specific skill regardless of
-// what the index thinks. This is where you encode the routing your corpus can't
-// learn on its own.
+// ── THIS TABLE IS YOURS TO FILL. ──
+// The entries below are examples of the shape. Add one entry per domain skill
+// whose trigger vocabulary TF-IDF keeps missing — the highest-leverage ones are
+// skills you invoke constantly with the same few phrases.
 const DOMAIN_OVERRIDES = [
   // Example — payments domain routes to a payments-ops skill
   { pattern: /\b(stripe|payment|invoice|billing|charge).{0,15}(integration|webhook|reconcile|dispute)/i,
@@ -70,9 +69,9 @@ const DOMAIN_OVERRIDES = [
   { pattern: /\bplan.{0,10}(this )?phase\b|\bmulti.step.{0,10}feature\b|\bbreak.{0,10}down.{0,10}(this )?work/i,
     skill: 'plan-phase', reason: 'Multi-step feature / planning phase' },
 
-  // Example — strategic / executive memo routes to a framing skill
-  { pattern: /\b(board|investor|exec).{0,10}update\b|\b(strategic|executive).{0,10}memo\b/i,
-    skill: 'mbb-frame', reason: 'Strategic / executive memo phrase' },
+  // Example — route "why didn't X fire" introspection to your meta/debug skill
+  { pattern: /\b(cascade|brain|skill|agent|routing).{0,20}(stats|audit|introspect|trace|why.didnt|broken|not.working)|\baudit.{0,10}(the )?routing|\brouting.{0,15}(audit|broken|trace)/i,
+    skill: 'cascade-brain', reason: 'Cascade introspection / routing audit phrase' },
 ];
 
 function findDomainOverrides(prompt) {
@@ -478,7 +477,7 @@ module.exports = {
             }
             if (lines.length > 1) blocks.push(lines.join('\n'));
 
-            // C1 telemetry — append recommendations to JSONL for later analysis.
+            // Telemetry — append recommendations to JSONL for later analysis.
             // Best-effort; log failure must not break the hook.
             if (logged.length > 0) {
               try {

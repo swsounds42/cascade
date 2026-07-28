@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /**
  * Cascade Model Router (aggressive mode)
- * Recommends a Claude model tier (Opus 4.7 / Sonnet 4.6 / Haiku 4.5) for a given prompt.
+ * Recommends a Claude model tier (Opus / Sonnet / Haiku) for a given prompt.
  *
  * Architecture:
  *   - Tier 1: deterministic regex rules (zero latency, free)
  *   - Tier 2: length-based fallback — short prompts default to Haiku
- *   - Tier 3: Sonnet 4.6 default when nothing else fires
+ *   - Tier 3: Sonnet default when nothing else fires
  *   - Output: advisory tag emitted by hook-handler.cjs `route` event
  *
  * Aggressive thresholds (asymmetric on purpose):
@@ -14,7 +14,7 @@
  *   - Haiku emit: ≥0.65 — broad set of downgrades, bias toward saving credits
  *   - Sonnet stays silent (the default needs no tag)
  *
- * Rationale: this user pays per Opus token. The cost of Opus running on trivia is
+ * Rationale: you pay per Opus token. The cost of Opus running on trivia is
  * ~5× wasted credits, silent and recurring. The cost of Haiku failing on hard work
  * is one wasted turn that the user notices and retries with `!opus`. Lean toward
  * Haiku when uncertain — the failure mode is recoverable, the success mode saves money.
@@ -35,13 +35,15 @@ const EMIT_THRESHOLD_OPUS  = 0.85;  // Opus needs strong signal
 const EMIT_THRESHOLD_HAIKU = 0.65;  // Haiku catches more downgrades
 
 // Length-based fallback: prompts shorter than this fall to Haiku unless they
-// match a higher-tier pattern. Empirically, short prompts in this user's
-// workflow are usually quick edits, lookups, or confirmations.
+// match a higher-tier pattern. Empirically, short prompts are usually quick
+// edits, lookups, or confirmations.
 const SHORT_PROMPT_CHARS = 80;
 const SHORT_PROMPT_WORDS = 12;
 
 // Pattern rules — first match wins. Order = specificity (specific → general).
 // Each rule: { pattern, model, tier, confidence, reason }
+// The skill-name patterns (gsd-*, gws-*, recipe-*, sf-*) match the public GSD /
+// Google Workspace / Salesforce skill packs — swap in your own skill families.
 const MODEL_PATTERNS = [
   // ───────────────────────── EXPLICIT OVERRIDES (highest priority) ─────────────────────────
   { pattern: /(?:^|\s)!opus\b|--opus\b|\bforce.opus\b|\buse.opus\b/i,
@@ -86,18 +88,18 @@ const MODEL_PATTERNS = [
     model: 'opus', tier: 'reasoning', confidence: 0.88, reason: 'Security-critical analysis' },
 
   // Strategic / executive output
-  { pattern: /\b(mbb-frame|board.update|investor.update|exec.brief|strategic.memo|exec.summary)\b/i,
+  { pattern: /\b(board.update|investor.update|exec.brief|strategic.memo|exec.summary)\b/i,
     model: 'opus', tier: 'reasoning', confidence: 0.90, reason: 'Strategic / executive output' },
-  // Ernie persona — explicit invocation of CEO judgment, emit
-  { pattern: /\bask.ernie\b|\bhey.ernie\b|\bwhat.would.ernie.say\b|\bernie.mode\b/i,
-    model: 'opus', tier: 'reasoning', confidence: 0.86, reason: 'Ernie persona — CEO judgment' },
 
   // Explicit deep-thinking requests — emit at threshold (genuine reasoning signals)
   { pattern: /\b(think.hard|think.deeply|deeply.analyze|reason.through|reason.carefully)\b/i,
     model: 'opus', tier: 'reasoning', confidence: 0.86, reason: 'Explicit deep-reasoning request' },
   { pattern: /\b(deep.{0,5}(look|hard|thorough)|hard.look|thorough.review|really.{0,5}analyze)\b/i,
     model: 'opus', tier: 'reasoning', confidence: 0.86, reason: 'Diagnostic / thorough-review request' },
-  // Loose deep-dive — kept silent at threshold (overused phrase)
+  // Deep-dive TIGHT — phrase AND a domain keyword (AND via lookaheads). Emits at threshold.
+  { pattern: /^(?=[\s\S]*\b(deep[\s-]?(dive|thinking|think|research|analysis)|extensive analysis)\b)(?=[\s\S]*\b(system|architecture|architect|decision|problem|strategy|tradeoff|design|root[\s-]?cause)\b)/i,
+    model: 'opus', tier: 'reasoning', confidence: 0.86, reason: 'Deep-dive on a system/decision (reasoning)' },
+  // Deep-dive LOOSE — kept silent at threshold (overused phrase, no domain anchor)
   { pattern: /\b(deep.dive|deep.thinking|deep.research|extensive.analysis)\b/i,
     model: 'opus', tier: 'reasoning', confidence: 0.78, reason: 'Deep-dive (loose)' },
 
@@ -112,10 +114,6 @@ const MODEL_PATTERNS = [
   // Multi-phase / large refactors — silent at threshold (Sonnet handles fine)
   { pattern: /\b(multi.phase.plan|complex.refactor|major.refactor|migration.plan|legacy.modernization)\b/i,
     model: 'opus', tier: 'reasoning', confidence: 0.76, reason: 'Multi-phase refactor (loose)' },
-
-  // Heavy SF attribution edge cases — silent at threshold
-  { pattern: /\bsf.attribution.*(edge.case|ambiguous|unclear|complex|conflict)/i,
-    model: 'opus', tier: 'reasoning', confidence: 0.78, reason: 'SF attribution edge case (loose)' },
 
   // ───────────────────────── HAIKU — trivial, mechanical, lookup ─────────────────────────
 
@@ -153,7 +151,7 @@ const MODEL_PATTERNS = [
   { pattern: /\brecipe-[a-z\-]+/i,
     model: 'haiku', tier: 'trivial', confidence: 0.78, reason: 'Recipe / deterministic workflow' },
 
-  // SF mechanical ops (queries, metadata, deploy — not strategic)
+  // Salesforce mechanical ops (queries, metadata, deploy — not strategic)
   { pattern: /\bsf-(soql|metadata|deploy|debug|docs|connected.apps|permissions)\b/i,
     model: 'haiku', tier: 'trivial', confidence: 0.72, reason: 'SF mechanical op' },
 
@@ -225,7 +223,63 @@ const MODEL_PATTERNS = [
   // Docs / README updates (non-trivial wording, but not Opus)
   { pattern: /\b(update|write|draft|revise).{0,15}(docs?|documentation|readme|guide|tutorial|changelog)\b/i,
     model: 'sonnet', tier: 'standard', confidence: 0.70, reason: 'Documentation update' },
+
+  // Conversational work direction — rescues medium-length prompts that would silently
+  // hit Sonnet 'default' anyway, giving them an explicit tier/reason. The 50-char floor
+  // ensures short trivia (which must keep flowing to the Haiku short-prompt fallback)
+  // is never caught here. The 400-char ceiling excludes large specs (already caught above).
+  // The negative lookahead blocks escalation-eligible subjects so this never promotes
+  // something that should be Opus.
+  { pattern: /^(?=[\s\S]{50,400}$)(?!.*\b(deep|system|architecture|debug|audit|security|design)\b).*\b(let'?s|we should|we need|can you|i want to|go ahead and|please)\b.*\b(fix|update|build|review|refactor|sweep|clean|rework|wire|hook up|pull|re-?pull|set up|add|remove|redo|rebuild)\b/i,
+    model: 'sonnet', tier: 'standard', confidence: 0.65, reason: 'Conversational work direction (standard)' },
 ];
+
+/**
+ * Returns true when a short prompt carries clear "real-work signal" that should
+ * rescue it from the aggressive short→Haiku length fallback and let it fall
+ * through to the Sonnet default instead.
+ *
+ * Conservative by design — only four narrow categories. The router deliberately
+ * biases toward Haiku for true trivia; this guard rescues only obvious work signals.
+ * Do NOT add a bare multi-sentence / period-splitting heuristic — that over-triggers
+ * on things like "Thanks. Yep."
+ *
+ * @param {string} prompt - raw prompt text
+ * @returns {boolean}
+ */
+function hasRealWorkSignal(prompt) {
+  const p = prompt.toLowerCase();
+
+  // Category 1 — Troubleshooting / breakage
+  const troubleshooting = [
+    /\b(can'?t|cannot|won'?t|doesn'?t|isn'?t|not)\s+(see|work|working|load|loading|render|rendering|start|starting|run|running|build|building|connect|connecting|find|showing|display)\b/,
+    /\b(broken|broke|fails?|failing|failed|errors?|crash(es|ing|ed)?|stuck|hangs?|hanging|stopped working)\b/,
+    /\bwhy\s+(is|isn'?t|are|aren'?t|does|doesn'?t|do|don'?t|won'?t|can'?t|did)\b/,
+  ];
+
+  // Category 2 — Scoped question / procedure
+  const scopedQuestion = [
+    /\bhow\s+do\s+i\b/,
+    /\bwalk\s+me\s+through\b/,
+    /\bstep[\s-]by[\s-]step\b/,
+    /\bwhat'?s\s+next\b/,
+    /\b(how|what|which|where|should)\b[^?]*\?/,
+  ];
+
+  // Category 3 — Review / feedback
+  const reviewFeedback = [
+    /\b(feedback|thoughts on|notes on|review this|take a look|what do you think|look(s)? (right|good|off|wrong))\b/,
+  ];
+
+  // Category 4 — Non-trivial work verbs (intentionally NARROW)
+  // Excludes trivial verbs like fix/update/add/delete/commit/run — those stay Haiku.
+  const workVerbs = [
+    /\b(debug|refactor|re-?design|investigate|troubleshoot|optimi[sz]e|re-?work|re-?architect|diagnose|root[\s-]cause)\b/,
+  ];
+
+  const allCategories = [...troubleshooting, ...scopedQuestion, ...reviewFeedback, ...workVerbs];
+  return allCategories.some(re => re.test(p));
+}
 
 function routeModel(task) {
   if (!task || !task.trim()) {
@@ -245,18 +299,25 @@ function routeModel(task) {
   }
 
   // Tier 2: length-based fallback — short prompts default to Haiku.
-  // Empirically: short prompts in this user's workflow are quick edits, lookups,
-  // or confirmations. If they're not, the user can override with `!opus` / `!sonnet`.
+  // Empirically: short prompts are usually quick edits, lookups, or
+  // confirmations. If they're not, the user can override with `!opus` / `!sonnet`.
   const trimmed = task.trim();
   const len = trimmed.length;
   const wordCount = trimmed.split(/\s+/).length;
   if (len < SHORT_PROMPT_CHARS && wordCount < SHORT_PROMPT_WORDS) {
-    return {
-      model: 'haiku',
-      tier: 'short-prompt',
-      confidence: 0.70,
-      reason: `Short prompt (${len} chars, ${wordCount} words) — likely simple`,
-    };
+    // Content-aware guard: skip the Haiku downgrade when the short prompt carries
+    // clear real-work signal. Let it fall through to the Sonnet default instead.
+    // hasRealWorkSignal() is conservative — only fires on troubleshooting, scoped
+    // questions, review/feedback, or narrow non-trivial work verbs.
+    if (!hasRealWorkSignal(trimmed)) {
+      return {
+        model: 'haiku',
+        tier: 'short-prompt',
+        confidence: 0.70,
+        reason: `Short prompt (${len} chars, ${wordCount} words) — likely simple`,
+      };
+    }
+    // Falls through to Sonnet default below.
   }
 
   // Tier 3: Sonnet default for medium-length unmatched prompts.
@@ -293,7 +354,7 @@ function shouldEmit(decision) {
 function formatDirective(decision) {
   const pct = Math.round(decision.confidence * 100);
   if (decision.model === 'opus') {
-    return `[CASCADE MODEL] ⚡ ESCALATE: this task warrants Opus 4.7 (${pct}% — ${decision.reason}). `
+    return `[CASCADE MODEL] ⚡ ESCALATE: this task warrants Opus (${pct}% — ${decision.reason}). `
          + `Spawn the work via Task tool with \`model: 'opus'\` rather than running inline on the session model.`;
   }
   if (decision.model === 'haiku') {

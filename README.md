@@ -4,12 +4,14 @@
 
 Cascade is the framework behind [samwarren.io](https://samwarren.io) — the
 runtime that turns Claude Code into a conversational layer across whatever
-work system you plug it into. It does four things:
+work system you plug it into. It does six things:
 
 1. **Classifies intent** — you type plain English, Cascade routes it to the right skill or agent without waiting for slash commands.
 2. **Surfaces context on every turn** — a TF-IDF index over your `Knowledge/` folder + an episodic memory of past actions fires relevant snippets into the prompt automatically.
 3. **Dispatches to specialists** — domain-aware routing biases toward the agent with the best track record for your current task.
-4. **Learns from corrections** — every outcome gets recorded; patterns promote to long-term biases over time.
+4. **Routes to the right model tier** — a deterministic classifier recommends Opus / Sonnet / Haiku per prompt, with asymmetric thresholds that bias toward the cheap tier for trivia and demand strong evidence before escalating. Every decision is logged for retrospective tuning.
+5. **Learns from corrections** — every outcome gets recorded; patterns promote to long-term biases over time.
+6. **Mines instincts from its own history** — commands you repeat across sessions become confidence-scored habits ("before committing → run prettier") surfaced when the prompt matches their domain.
 
 This repo is the **framework** — the hook runtime, the MCP servers, the
 workflow templates, the bootstrap. Your instance of it (your Knowledge,
@@ -38,9 +40,11 @@ cascade/
 │   ├── context-health.py       context window breakdown — run whenever you're curious
 │   └── hooks/
 │       ├── hook-handler.cjs    main dispatcher
-│       ├── intelligence.cjs    knowledge indexing + TF-IDF search
+│       ├── intelligence.cjs    knowledge indexing + TF-IDF search + domain-override table
 │       ├── router.cjs          domain-aware task routing with outcome history
-│       ├── model-router.cjs    per-prompt model-tier classifier (Haiku/Sonnet/Opus)
+│       ├── model-router.cjs    per-prompt Claude tier recommendation (Opus/Sonnet/Haiku) + decision log
+│       ├── instincts.cjs       confidence-scored command habits mined from the observation DB
+│       ├── read-gate.cjs       PreToolUse guardrail — read-before-edit + lint-config protection
 │       ├── session.cjs         session state + metrics
 │       ├── observations.cjs    episodic memory, SQLite FTS5 backing store
 │       ├── vector-search.cjs   TF-IDF vectorizer + cosine similarity
@@ -106,7 +110,8 @@ loops Cascade is optimized for:
 The hooks in `scripts/hooks/` fire on three Claude Code events:
 
 - **`SessionStart`** — indexes any files in `Knowledge/` via TF-IDF. Loads episodic memory from SQLite. Prints a stat line so you know how much brain surface area just came online.
-- **`UserPromptSubmit`** — on every prompt, looks up relevant knowledge and past similar actions. Surfaces the top matches in the prompt as context. Recommends which specialist agent historically handles this kind of request best. Also classifies the prompt's complexity and recommends a Claude model tier (`model-router.cjs`) — Haiku for confirmations and mechanical work, Opus for hard reasoning, Sonnet for everything in between — so credits go where they buy real lift.
+- **`UserPromptSubmit`** — on every prompt, looks up relevant knowledge and past similar actions. Surfaces the top matches in the prompt as context. Recommends which specialist agent historically handles this kind of request best, which Claude tier the task warrants (model-router), and any learned command habits that apply (instincts).
+- **`PreToolUse`** — the read-gate: blocks edits to files that haven't been Read this session (kills the blind-edit retry loop) and blocks edits to lint/formatter configs so the agent fixes code instead of weakening rules. Fail-open, kill-switchable.
 - **`PostToolUse`** — records every tool call as an episodic observation. Checkpoints git state before parallel agent dispatches. Flags files touched by multiple agents in the same wave (drift detection).
 
 Everything is local — SQLite for episodic memory, JSON for TF-IDF vectors.
