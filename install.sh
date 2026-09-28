@@ -83,6 +83,10 @@ fi
 echo ""
 echo "--- Hook runtime ---"
 
+if ! command -v node &>/dev/null; then
+  warn "node not found. The hooks and the MCP server run on Node.js (22+ for the SQLite observation layer)."
+fi
+
 mkdir -p "$CLAUDE_HOOKS_DIR"
 
 link_hook() {
@@ -155,5 +159,5 @@ EOF
 
 echo ""
 ok "Cascade is installed."
-info "Next: scaffold your own ops directory — see README.md 'Scaffolding your own instance'."
+info "Next: set up a workspace — see README.md 'Setting up your workspace'."
 echo ""

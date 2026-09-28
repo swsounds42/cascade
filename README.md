@@ -14,28 +14,27 @@ work system you plug it into. It does six things:
 6. **Mines instincts from its own history** — commands you repeat across sessions become confidence-scored habits ("before committing → run prettier") surfaced when the prompt matches their domain.
 
 This repo is the **framework** — the hook runtime, the MCP servers, the
-workflow templates, the bootstrap. Your instance of it (your Knowledge,
-your Tasks, your Goals, your routing table) lives in your own private
-repo or workspace.
+bootstrap. Your instance of it (your Knowledge, your routing table, your
+task system) lives in your own private repo or workspace.
+
+Started as a fork of Aman Khan's
+[personal-os](https://github.com/amanaiproduct/personal-os) template. The
+hook runtime grew on top of it; the template's task and backlog layer
+lives in Aman's repo, not this one.
 
 ## What's in here
 
 ```
 cascade/
 ├── README.md             this doc
-├── AGENTS.md             the default agent instructions — starting contract
 ├── install.sh            installer
 ├── LICENSE               MIT
+├── NOTICE.md             credits + license notices for adapted code
 ├── core/
-│   ├── mcp/
-│   │   ├── server.py           Cascade's intelligence MCP — exposes knowledge_search, route_task, record_outcome, drift_check
-│   │   ├── salesforce_mcp.py   Optional Salesforce MCP — query, list reports, update dashboards
-│   │   └── requirements.txt
-│   ├── integrations/README.md  notes on wiring up external tools
-│   └── templates/              scaffolding for your own Cascade instance
-│       ├── AGENTS.md
-│       ├── config.yaml
-│       └── gitignore
+│   └── mcp/
+│       ├── server.py           Cascade's intelligence MCP — knowledge_search, route_task, record_outcome, drift checks
+│       ├── salesforce_mcp.py   Optional Salesforce MCP — query, list reports, update dashboards
+│       └── requirements.txt
 ├── scripts/
 │   ├── context-health.py       context window breakdown — run whenever you're curious
 │   └── hooks/
@@ -49,8 +48,6 @@ cascade/
 │       ├── observations.cjs    episodic memory, SQLite FTS5 backing store
 │       ├── vector-search.cjs   TF-IDF vectorizer + cosine similarity
 │       └── drift-detector.cjs  git-state conflict detection across parallel agents
-└── examples/
-    └── workflows/              generic workflow templates — backlog processing, morning standup, weekly review, content generation
 ```
 
 ## What this is not
@@ -79,31 +76,27 @@ The installer will:
 2. Install Python deps for the MCP server (`pip install -r core/mcp/requirements.txt`)
 3. Symlink `scripts/hooks/*.cjs` into `~/.claude/hooks/` so Claude Code fires them on session start + tool use
 4. Print MCP server registration instructions for your `~/.claude/settings.json`
-5. Optionally scaffold a starter personal-OS directory from `core/templates/`
 
-## Scaffolding your own instance
+## Setting up your workspace
 
-After install, start your own personal ops layer in a new directory:
+Cascade works out of the folder you run Claude Code in, or the folder
+`CASCADE_ROOT` points to. All it needs there is a `Knowledge/` directory
+(plus `git init`, if you want drift detection):
 
 ```bash
-mkdir ~/ops && cd ~/ops
-cp ~/cascade/core/templates/* .
-cp ~/cascade/AGENTS.md .
-mkdir Knowledge Tasks
-touch BACKLOG.md GOALS.md
+mkdir -p ~/ops/Knowledge && cd ~/ops && git init
 ```
 
-Edit `AGENTS.md` to describe how you want your assistant to behave. Drop
-notes into `Knowledge/`. The TF-IDF index rebuilds on every session start
-— your notes become searchable context automatically.
+Drop notes into `Knowledge/`. The TF-IDF index rebuilds on every session
+start — your notes become searchable context automatically. Cascade keeps
+its own state (index, observations, routing history) in `.cascade/`
+alongside them.
 
-From there, read the workflows in `examples/workflows/` to understand the
-loops Cascade is optimized for:
-
-- **`morning-standup.md`** — "What should I work on today?" with goal-alignment checks
-- **`backlog-processing.md`** — clearing `BACKLOG.md` into structured tasks with dedup
-- **`weekly-review.md`** — retrospective prompts
-- **`content-generation.md`** — writing in a specific voice with source-grounded research
+Want a task list, a backlog, and daily and weekly planning loops to go with
+it? That's what Aman Khan's
+[personal-os](https://github.com/amanaiproduct/personal-os) gives you, and
+it's where Cascade started. Use it as your workspace and run the hooks on
+top.
 
 ## Intelligence hooks, in one paragraph
 
@@ -124,25 +117,35 @@ tools so Claude Code (and other MCP clients) can query it directly:
 
 | Tool | What it does |
 |------|--------------|
-| `knowledge_search(query, top_k)` | Semantic search over `Knowledge/` via TF-IDF |
-| `route_task(description)` | Domain-aware specialist-agent recommendation with confidence + historical hit rate |
-| `record_outcome(agent, task, success, notes)` | Teach the router which agents work for what |
-| `intelligence_stats()` | Current index size, memory entries, recent routing decisions |
-| `drift_checkpoint(label)` | Snapshot git state before spawning parallel agents |
-| `drift_check()` | Report files touched by multiple agents since the last checkpoint |
+| `knowledge_search(query, top_k)` | TF-IDF search over `Knowledge/` and memory files (up to 5 matches) |
+| `route_task(task)` | Specialist-agent recommendation with confidence and the pattern that matched |
+| `record_outcome(agent, task, success)` | Log whether an agent succeeded; repeated successes become learned patterns at session end |
+| `intelligence_stats()` | Index size, learned patterns, observation counts |
+| `drift_checkpoint()` | Snapshot the current git commit before spawning parallel agents |
+| `drift_check()` | Report files changed by more than one commit since the last checkpoint (committed work only) |
 
-Register it in `~/.claude/settings.json`:
+Each tool calls the matching module in `scripts/hooks/` (Node required), so
+the MCP server and the hooks share the same `.cascade/` state. The drift
+tools need the workspace to be a git repo.
+
+Register it in `~/.claude/settings.json` (the installer prints this with
+your paths filled in):
 
 ```json
 {
   "mcpServers": {
     "cascade": {
-      "command": "python3",
+      "command": "/absolute/path/to/cascade/core/mcp/.venv/bin/python3",
       "args": ["/absolute/path/to/cascade/core/mcp/server.py"]
     }
   }
 }
 ```
+
+If your workspace isn't the folder you launch Claude Code from, set
+`CASCADE_ROOT` in both places: export it in your shell so the hooks see it,
+and add `"env": {"CASCADE_ROOT": "/path/to/your/workspace"}` to the server
+entry. Otherwise the hooks and the server keep separate `.cascade/` state.
 
 ## Optional: Salesforce MCP
 
@@ -157,8 +160,8 @@ SALESFORCE_CLIENT_SECRET
 SALESFORCE_INSTANCE_URL
 ```
 
-Written for connected-app OAuth with JWT; see the docstring at the top of
-the file.
+It signs in with the OAuth client-credentials flow, so your connected app
+needs that flow enabled.
 
 ## Built on
 
@@ -169,6 +172,13 @@ the file.
 ## License
 
 MIT. See `LICENSE`.
+
+A few files adapt code from [Ruflo](https://github.com/ruvnet/ruflo) and
+[Nelson](https://github.com/Aspegio/nelson), both MIT; their notices are in
+`NOTICE.md`. None of the personal-os template's files remain, but earlier
+commits in this repo's history include them, and those stay under Aman
+Khan's [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+license.
 
 ## See also
 

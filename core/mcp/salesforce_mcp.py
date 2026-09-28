@@ -2,15 +2,13 @@
 """
 Salesforce MCP Server — Campaign management tools for Claude Code.
 
-Connects to Salesforce via username-password OAuth flow.
+Connects to Salesforce via the OAuth client-credentials flow (the connected
+app needs that flow enabled).
 Provides campaign CRUD, deep cloning (with member statuses), and raw SOQL.
 
 Environment variables required:
   SALESFORCE_CLIENT_ID
   SALESFORCE_CLIENT_SECRET
-  SALESFORCE_USERNAME
-  SALESFORCE_PASSWORD
-  SALESFORCE_TOKEN          (security token appended to password)
   SALESFORCE_INSTANCE_URL   (e.g. https://yourcompany.my.salesforce.com)
 """
 

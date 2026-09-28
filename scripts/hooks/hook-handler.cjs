@@ -2,7 +2,7 @@
 /**
  * Cascade Hook Handler
  * Main dispatcher for Claude Code lifecycle hooks.
- * Adapted from Ruflo's hook-handler pattern, tuned for personal-os.
+ * Adapted from Ruflo's hook-handler (MIT, see NOTICE.md), tuned for personal-os.
  *
  * Hook events:
  *   session-start   → Init intelligence index, restore/start session

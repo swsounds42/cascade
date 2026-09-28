@@ -3,6 +3,7 @@
  * Cascade Session Manager
  * Tracks session state, metrics, and context across Claude Code sessions.
  * Data persists in .cascade/sessions/ for cross-session learning.
+ * Start/restore/end structure follows Ruflo's session helper (MIT, see NOTICE.md).
  */
 'use strict';
 

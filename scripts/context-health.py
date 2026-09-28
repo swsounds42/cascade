@@ -3,6 +3,7 @@
 
 Reads Claude Code session JSONL files and extracts exact token counts
 from API usage data. No external dependencies — stdlib only.
+Log parsing adapted from Nelson's count-tokens.py (MIT, see NOTICE.md).
 
 Usage:
     # Auto-detect current session (finds most recent JSONL)
